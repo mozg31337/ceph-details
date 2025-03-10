@@ -210,23 +210,106 @@ echo "|--------|------|-----------|-------------|----------------|---------|----
 for osd_id in $local_osds; do
     # Get metadata for this OSD
     metadata=$(sudo ceph osd metadata $osd_id 2>/dev/null)
+    log_debug "Processing metadata for OSD $osd_id"
     
-    # Extract only the information we want
-    size=$(echo "$metadata" | grep -o '"bluestore_bdev_size":"[^"]*"' | cut -d'"' -f4)
-    # Convert size from bytes to GB if not empty
-    if [[ ! -z "$size" && $BC_AVAILABLE -eq 1 ]]; then
-        size_gb=$(echo "scale=2; $size / 1024 / 1024 / 1024" | bc -l)
-        size="${size_gb}GB"
+    # Initialize variables
+    size="Unknown"
+    data_path="Unknown"
+    device_path="Unknown"
+    partition_path="Unknown"
+    db_path="N/A"
+    wal_path="N/A"
+    
+    if [[ ! -z "$metadata" ]]; then
+        # Try different extraction methods
+        
+        # Method 1: Using grep and cut
+        size_raw=$(echo "$metadata" | grep -o '"bluestore_bdev_size":[^,}]*' | cut -d':' -f2 | tr -d '"' | tr -d ' ' 2>/dev/null)
+        if [[ ! -z "$size_raw" ]]; then
+            # Convert size from bytes to GB if not empty
+            if [[ $BC_AVAILABLE -eq 1 ]]; then
+                size_gb=$(echo "scale=2; $size_raw / 1024 / 1024 / 1024" | bc -l 2>/dev/null)
+                if [[ ! -z "$size_gb" ]]; then
+                    size="${size_gb}GB"
+                else
+                    size="${size_raw} bytes"
+                fi
+            else
+                size="${size_raw} bytes"
+            fi
+        fi
+        
+        # Extract paths with more robust patterns
+        data_path=$(echo "$metadata" | grep -o '"osd_data":[^,}]*' | cut -d':' -f2 | tr -d '"' | tr -d ' ' 2>/dev/null)
+        device_path=$(echo "$metadata" | grep -o '"device_paths":[^,}]*' | cut -d':' -f2 | tr -d '"' | tr -d ' ' 2>/dev/null)
+        partition_path=$(echo "$metadata" | grep -o '"bluestore_bdev_partition_path":[^,}]*' | cut -d':' -f2 | tr -d '"' | tr -d ' ' 2>/dev/null)
+        db_path=$(echo "$metadata" | grep -o '"bluefs_db_partition_path":[^,}]*' | cut -d':' -f2 | tr -d '"' | tr -d ' ' 2>/dev/null)
+        wal_path=$(echo "$metadata" | grep -o '"bluefs_wal_partition_path":[^,}]*' | cut -d':' -f2 | tr -d '"' | tr -d ' ' 2>/dev/null)
+        
+        # Method 2: Try with alternative pattern if first failed
+        if [[ -z "$data_path" || "$data_path" == "Unknown" ]]; then
+            data_path=$(echo "$metadata" | grep "osd_data" | head -1 | sed 's/.*"osd_data": *"\([^"]*\)".*/\1/' 2>/dev/null)
+        fi
+        
+        # Alternative methods for other fields
+        if [[ -z "$device_path" || "$device_path" == "Unknown" ]]; then
+            device_path=$(echo "$metadata" | grep "device_paths" | head -1 | sed 's/.*"device_paths": *"\([^"]*\)".*/\1/' 2>/dev/null)
+        fi
+        
+        if [[ -z "$partition_path" || "$partition_path" == "Unknown" ]]; then
+            partition_path=$(echo "$metadata" | grep "bluestore_bdev_partition_path" | head -1 | sed 's/.*"bluestore_bdev_partition_path": *"\([^"]*\)".*/\1/' 2>/dev/null)
+        fi
+        
+        # Check and fix values
+        if [[ -z "$data_path" ]]; then
+            data_path="Unknown"
+        fi
+        
+        if [[ -z "$device_path" ]]; then
+            device_path="Unknown"
+        fi
+        
+        if [[ -z "$partition_path" ]]; then
+            partition_path="Unknown"
+        fi
+        
+        if [[ -z "$db_path" ]]; then
+            db_path="N/A"
+        elif [[ "$db_path" == "null" ]]; then
+            db_path="N/A"
+        fi
+        
+        if [[ -z "$wal_path" ]]; then
+            wal_path="N/A"
+        elif [[ "$wal_path" == "null" ]]; then
+            wal_path="N/A"
+        fi
     fi
     
-    data_path=$(echo "$metadata" | grep -o '"osd_data":"[^"]*"' | cut -d'"' -f4)
-    device_path=$(echo "$metadata" | grep -o '"device_paths":"[^"]*"' | cut -d'"' -f4)
-    partition_path=$(echo "$metadata" | grep -o '"bluestore_bdev_partition_path":"[^"]*"' | cut -d'"' -f4)
-    db_path=$(echo "$metadata" | grep -o '"bluefs_db_partition_path":"[^"]*"' | cut -d'"' -f4)
-    wal_path=$(echo "$metadata" | grep -o '"bluefs_wal_partition_path":"[^"]*"' | cut -d'"' -f4)
+    # Method 3: Try using ceph-volume for some details
+    if [[ "$data_path" == "Unknown" ]]; then
+        osd_dir="/var/lib/ceph/osd/ceph-$osd_id"
+        if [[ -d "$osd_dir" ]]; then
+            data_path="$osd_dir"
+        fi
+    fi
+    
+    if [[ "$device_path" == "Unknown" || "$partition_path" == "Unknown" ]]; then
+        cv_info=$(sudo ceph-volume lvm list $osd_id 2>/dev/null)
+        if [[ $? -eq 0 && ! -z "$cv_info" ]]; then
+            if [[ "$device_path" == "Unknown" ]]; then
+                device_path=$(echo "$cv_info" | grep -P "^ +devices" | head -1 | awk '{print $NF}' 2>/dev/null)
+            fi
+            
+            if [[ "$partition_path" == "Unknown" ]]; then
+                partition_path=$(echo "$cv_info" | grep "block device" | head -1 | awk '{print $NF}' 2>/dev/null)
+            fi
+        fi
+    fi
     
     # Output to the table
     echo "| $osd_id | $size | $data_path | $device_path | $partition_path | $db_path | $wal_path |" >> ceph-mapping.md
+    log_debug "Added OSD $osd_id metadata to table"
 done
 
 echo "" >> ceph-mapping.md
