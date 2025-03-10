@@ -9,6 +9,7 @@ A comprehensive solution for monitoring Ceph clusters with automated data collec
 - **Secure Authentication**: SSH key-based authentication with sudo support
 - **Comprehensive Info**: Collects detailed OSD, device, and pool information
 - **BlueStore Support**: Maps WAL and DB devices to their respective OSDs
+- **Multi-key Type Support**: Compatible with ED25519, RSA, ECDSA, and DSS SSH keys
 
 ### Dashboard Interface
 - **Cluster Overview**: View capacity, usage, OSD counts, and pool information
@@ -18,6 +19,8 @@ A comprehensive solution for monitoring Ceph clusters with automated data collec
   - Partition mappings
   - WAL and DB device connections
   - Searchable/filterable interface
+- **OSDs by Server & Type**: Organized view of OSDs grouped by server and device type (HDD/SSD)
+- **LVM Support**: Properly displays complex LVM setups including logical volumes
 - **Health Monitoring**: Warnings for BlueFS spillover and other issues
 - **Real-time Refresh**: Update data dynamically
 
@@ -26,6 +29,9 @@ A comprehensive solution for monitoring Ceph clusters with automated data collec
 - **Single Sign-on**: Enter credentials once for multiple servers
 - **Automatic Launch**: One command to collect data and view dashboard
 - **Responsive Design**: Works on desktop and mobile devices
+- **Interactive Search**: Filter OSDs and devices across all servers
+- **Visual Classification**: Color-coded sections for HDD and SSD devices
+- **Flexible Shell Support**: Auto-detects various shell prompts for better compatibility
 
 ## Components
 
@@ -141,23 +147,61 @@ ceph-details/
 ├── static/                     # CSS and static assets
 │   └── style.css
 ├── templates/                  # HTML templates
-│   └── index.html
+│   ├── base.html               # Base template with navigation
+│   ├── index.html              # Home page template
+│   └── osds_by_server.html     # OSDs by server and type template
 └── README.md                   # This file
 ```
+
+## View Descriptions
+
+### Home Page
+The main dashboard showing an overview of all servers, with detailed sections for:
+- Cluster status and health
+- OSD tree structure
+- Local OSD list
+- Pool usage statistics
+- Storage device listings
+
+### OSDs by Server & Type
+A dedicated view that organizes all OSDs across your Ceph cluster by:
+- Server (each server gets its own section)
+- Device type (separate tables for SSDs and HDDs)
+- Complete information including:
+  - OSD ID
+  - Device path
+  - Size
+  - Model
+  - DB Device (with size)
+  - WAL Device (with size)
+- Interactive search box to filter by any attribute
+- Visual differentiation between SSD and HDD devices
+- Support for complex LVM configurations
+
+## API Endpoints
+
+The dashboard provides JSON API endpoints for programmatic access:
+
+- `/api/servers` - Get information for all servers
+- `/api/server/{server_name}` - Get information for a specific server
 
 ## Troubleshooting
 
 ### Data Collection Issues
 
 - **SSH Connection Failures**: Verify server IPs and SSH key paths
+- **SSH Key Type Issues**: The script now supports multiple key types (ED25519, RSA, ECDSA, DSS)
+- **Shell Prompt Detection**: The script auto-detects various shell prompts for better compatibility
 - **Script Execution Errors**: Ensure the script has proper permissions
 - **No Output Files**: Check remote_script_path is correct
+- **LVM Configuration Issues**: The script now properly handles complex LVM setups
 
 ### Dashboard Issues
 
 - **Missing Data**: Ensure output files exist in the output/ directory
 - **Flask Errors**: Check terminal output for error messages
 - **Parsing Problems**: Check if the output format changed
+- **Table Display Issues**: Verify CSS is properly loaded
 
 ## Security Notes
 

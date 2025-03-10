@@ -1,0 +1,226 @@
+{% extends 'base.html' %}
+
+{% block title %}Ceph Cluster Dashboard{% endblock %}
+
+{% block content %}
+<div class="container-fluid">
+    <h1 class="mb-4">Ceph Cluster Dashboard</h1>
+    
+    <div class="row">
+        <div class="col-md-12">
+            <div class="alert alert-info">
+                <strong>Data collected from {{ all_data|length }} servers.</strong>
+                <div class="float-end">
+                    <a href="#" id="refreshBtn" class="btn btn-primary btn-sm">Refresh Data</a>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row mb-4">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h2 class="card-title">Cluster Overview</h2>
+                </div>
+                <div class="card-body">
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h3>Cluster Status</h3>
+                            <pre class="bg-light p-3">{{ all_data[0].status }}</pre>
+                        </div>
+                        <div class="col-md-6">
+                            <h3>Cluster Health</h3>
+                            <pre class="bg-light p-3">{{ all_data[0].health }}</pre>
+                        </div>
+                    </div>
+                    <div class="row mt-3">
+                        <div class="col-md-12">
+                            <h3>Ceph Version</h3>
+                            <pre class="bg-light p-3">{{ all_data[0].version }}</pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row mb-4">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-header bg-success text-white">
+                    <h2 class="card-title">OSD Tree</h2>
+                </div>
+                <div class="card-body">
+                    <pre class="bg-light p-3">{{ all_data[0].osd_tree }}</pre>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row mb-4">
+        <div class="col-md-12">
+            <div class="card">
+                <div class="card-header bg-warning text-dark">
+                    <h2 class="card-title">Pool Information</h2>
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-striped table-bordered">
+                            <thead class="thead-dark">
+                                <tr>
+                                    {% for key in all_data[0].pool_info[0].keys() %}
+                                    <th>{{ key }}</th>
+                                    {% endfor %}
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for pool in all_data[0].pool_info %}
+                                <tr>
+                                    {% for key, value in pool.items() %}
+                                    <td>{{ value }}</td>
+                                    {% endfor %}
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row">
+        <div class="col-md-12">
+            <h2>Server Details</h2>
+        </div>
+    </div>
+    
+    <div class="accordion" id="serverAccordion">
+        {% for server_data in all_data %}
+        <div class="accordion-item mb-3 border">
+            <h2 class="accordion-header" id="heading{{ loop.index }}">
+                <button class="accordion-button {% if loop.index > 1 %}collapsed{% endif %}" type="button" data-bs-toggle="collapse" data-bs-target="#collapse{{ loop.index }}" aria-expanded="{% if loop.index == 1 %}true{% else %}false{% endif %}" aria-controls="collapse{{ loop.index }}">
+                    <strong>{{ server_data.server_name }}</strong> - {{ server_data.local_osds }} OSDs
+                </button>
+            </h2>
+            <div id="collapse{{ loop.index }}" class="accordion-collapse collapse {% if loop.index == 1 %}show{% endif %}" aria-labelledby="heading{{ loop.index }}" data-bs-parent="#serverAccordion">
+                <div class="accordion-body">
+                    <ul class="nav nav-tabs" id="serverTabs{{ loop.index }}" role="tablist">
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link active" id="osds-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#osds{{ loop.index }}" type="button" role="tab" aria-controls="osds{{ loop.index }}" aria-selected="true">OSDs</button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="disks-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#disks{{ loop.index }}" type="button" role="tab" aria-controls="disks{{ loop.index }}" aria-selected="false">Disk Info</button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="storage-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#storage{{ loop.index }}" type="button" role="tab" aria-controls="storage{{ loop.index }}" aria-selected="false">Storage Overview</button>
+                        </li>
+                        <li class="nav-item" role="presentation">
+                            <button class="nav-link" id="lvm-tab{{ loop.index }}" data-bs-toggle="tab" data-bs-target="#lvm{{ loop.index }}" type="button" role="tab" aria-controls="lvm{{ loop.index }}" aria-selected="false">LVM Configuration</button>
+                        </li>
+                    </ul>
+                    <div class="tab-content pt-3" id="serverTabsContent{{ loop.index }}">
+                        <div class="tab-pane fade show active" id="osds{{ loop.index }}" role="tabpanel" aria-labelledby="osds-tab{{ loop.index }}">
+                            <h4>OSD Device Mapping</h4>
+                            <div class="table-responsive">
+                                <table class="table table-striped table-bordered">
+                                    <thead class="thead-dark">
+                                        <tr>
+                                            {% if server_data.osd_mapping and server_data.osd_mapping|length > 0 %}
+                                            {% for key in server_data.osd_mapping[0].keys() %}
+                                            <th>{{ key }}</th>
+                                            {% endfor %}
+                                            {% else %}
+                                            <th>No OSD mapping data available</th>
+                                            {% endif %}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for osd in server_data.osd_mapping %}
+                                        <tr>
+                                            {% for key, value in osd.items() %}
+                                            <td>{{ value }}</td>
+                                            {% endfor %}
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                            
+                            <h4 class="mt-4">OSD Metadata</h4>
+                            <div class="table-responsive">
+                                <table class="table table-striped table-bordered">
+                                    <thead class="thead-dark">
+                                        <tr>
+                                            {% if server_data.osd_metadata and server_data.osd_metadata|length > 0 %}
+                                            {% for key in server_data.osd_metadata[0].keys() %}
+                                            <th>{{ key }}</th>
+                                            {% endfor %}
+                                            {% else %}
+                                            <th>No OSD metadata available</th>
+                                            {% endif %}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for osd in server_data.osd_metadata %}
+                                        <tr>
+                                            {% for key, value in osd.items() %}
+                                            <td>{{ value }}</td>
+                                            {% endfor %}
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="tab-pane fade" id="disks{{ loop.index }}" role="tabpanel" aria-labelledby="disks-tab{{ loop.index }}">
+                            <h4>Detailed Disk Information</h4>
+                            <div class="table-responsive">
+                                <table class="table table-striped table-bordered">
+                                    <thead class="thead-dark">
+                                        <tr>
+                                            {% if server_data.disk_info and server_data.disk_info|length > 0 %}
+                                            {% for key in server_data.disk_info[0].keys() %}
+                                            <th>{{ key }}</th>
+                                            {% endfor %}
+                                            {% else %}
+                                            <th>No disk information available</th>
+                                            {% endif %}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for disk in server_data.disk_info %}
+                                        <tr>
+                                            {% for key, value in disk.items() %}
+                                            <td>{{ value }}</td>
+                                            {% endfor %}
+                                        </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="tab-pane fade" id="storage{{ loop.index }}" role="tabpanel" aria-labelledby="storage-tab{{ loop.index }}">
+                            <h4>All Block Devices</h4>
+                            <pre class="bg-light p-3" style="max-height: 500px; overflow-y: auto;">{{ server_data.storage_info }}</pre>
+                        </div>
+                        <div class="tab-pane fade" id="lvm{{ loop.index }}" role="tabpanel" aria-labelledby="lvm-tab{{ loop.index }}">
+                            <h4>LVM Configuration</h4>
+                            <pre class="bg-light p-3" style="max-height: 500px; overflow-y: auto;">{{ server_data.lvm_info }}</pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+</div>
+
+<script>
+    document.getElementById('refreshBtn').addEventListener('click', function(e) {
+        e.preventDefault();
+        location.reload();
+    });
+</script>
+{% endblock %}

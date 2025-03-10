@@ -1,0 +1,184 @@
+{% extends 'base.html' %}
+
+{% block title %}OSDs by Server & Type{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <h1 class="mb-4">OSDs by Server & Device Type</h1>
+    
+    <p class="alert alert-info">
+        This view organizes OSDs by server and device type (HDD vs SSD), showing their WAL and DB devices with sizes.
+    </p>
+    
+    <div class="row">
+        <div class="col-md-12 mb-4">
+            <input type="text" id="searchInput" class="form-control" placeholder="Search for OSDs, devices, models...">
+        </div>
+    </div>
+    
+    {% for server_name, server_data in servers_data.items() %}
+    <div class="server-section mb-5" id="server-{{ server_name }}">
+        <h2 class="server-name bg-primary text-white p-2 rounded">Server: {{ server_name }}</h2>
+        
+        {% if server_data.ssd_osds %}
+        <div class="ssd-section mb-4">
+            <h3 class="device-type bg-info text-white p-2 rounded">
+                SSD OSDs <span class="badge bg-secondary">{{ server_data.ssd_osds|length }}</span>
+            </h3>
+            <div class="table-responsive">
+                <table class="table table-striped table-bordered table-hover">
+                    <thead class="thead-dark">
+                        <tr>
+                            <th>OSD ID</th>
+                            <th>Device Path</th>
+                            <th>Size</th>
+                            <th>Model</th>
+                            <th>DB Device</th>
+                            <th>DB Size</th>
+                            <th>WAL Device</th>
+                            <th>WAL Size</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for osd in server_data.ssd_osds %}
+                        <tr class="osd-row">
+                            <td class="osd-id">{{ osd.osd_id }}</td>
+                            <td class="device-path">{{ osd.device_path }}</td>
+                            <td class="size">{{ osd.size }}</td>
+                            <td class="model">{{ osd.model }}</td>
+                            <td class="db-device">{{ osd.db_device }}</td>
+                            <td class="db-size">{{ osd.db_size }}</td>
+                            <td class="wal-device">{{ osd.wal_device }}</td>
+                            <td class="wal-size">{{ osd.wal_size }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+        
+        {% if server_data.hdd_osds %}
+        <div class="hdd-section mb-4">
+            <h3 class="device-type bg-warning text-dark p-2 rounded">
+                HDD OSDs <span class="badge bg-secondary">{{ server_data.hdd_osds|length }}</span>
+            </h3>
+            <div class="table-responsive">
+                <table class="table table-striped table-bordered table-hover">
+                    <thead class="thead-dark">
+                        <tr>
+                            <th>OSD ID</th>
+                            <th>Device Path</th>
+                            <th>Size</th>
+                            <th>Model</th>
+                            <th>DB Device</th>
+                            <th>DB Size</th>
+                            <th>WAL Device</th>
+                            <th>WAL Size</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for osd in server_data.hdd_osds %}
+                        <tr class="osd-row">
+                            <td class="osd-id">{{ osd.osd_id }}</td>
+                            <td class="device-path">{{ osd.device_path }}</td>
+                            <td class="size">{{ osd.size }}</td>
+                            <td class="model">{{ osd.model }}</td>
+                            <td class="db-device">{{ osd.db_device }}</td>
+                            <td class="db-size">{{ osd.db_size }}</td>
+                            <td class="wal-device">{{ osd.wal_device }}</td>
+                            <td class="wal-size">{{ osd.wal_size }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+        
+        {% if server_data.unknown_osds %}
+        <div class="unknown-section mb-4">
+            <h3 class="device-type bg-secondary text-white p-2 rounded">
+                Unknown OSDs <span class="badge bg-light text-dark">{{ server_data.unknown_osds|length }}</span>
+            </h3>
+            <div class="table-responsive">
+                <table class="table table-striped table-bordered table-hover">
+                    <thead class="thead-dark">
+                        <tr>
+                            <th>OSD ID</th>
+                            <th>Device Path</th>
+                            <th>Size</th>
+                            <th>Model</th>
+                            <th>DB Device</th>
+                            <th>DB Size</th>
+                            <th>WAL Device</th>
+                            <th>WAL Size</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for osd in server_data.unknown_osds %}
+                        <tr class="osd-row">
+                            <td class="osd-id">{{ osd.osd_id }}</td>
+                            <td class="device-path">{{ osd.device_path }}</td>
+                            <td class="size">{{ osd.size }}</td>
+                            <td class="model">{{ osd.model }}</td>
+                            <td class="db-device">{{ osd.db_device }}</td>
+                            <td class="db-size">{{ osd.db_size }}</td>
+                            <td class="wal-device">{{ osd.wal_device }}</td>
+                            <td class="wal-size">{{ osd.wal_size }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    {% endfor %}
+</div>
+
+<script>
+    document.addEventListener('DOMContentLoaded', function() {
+        // Initialize search functionality
+        const searchInput = document.getElementById('searchInput');
+        searchInput.addEventListener('keyup', function() {
+            const searchText = this.value.toLowerCase();
+            
+            // Get all server sections
+            const serverSections = document.querySelectorAll('.server-section');
+            
+            serverSections.forEach(section => {
+                // Track if any rows match in this server section
+                let hasMatch = false;
+                
+                // Get all rows in this server section
+                const rows = section.querySelectorAll('.osd-row');
+                
+                rows.forEach(row => {
+                    const text = row.textContent.toLowerCase();
+                    if (text.includes(searchText)) {
+                        row.style.display = '';
+                        hasMatch = true;
+                    } else {
+                        row.style.display = 'none';
+                    }
+                });
+                
+                // Show/hide server section based on matches
+                if (hasMatch) {
+                    section.style.display = '';
+                } else {
+                    section.style.display = 'none';
+                }
+                
+                // If server name matches, show all
+                const serverName = section.querySelector('.server-name').textContent.toLowerCase();
+                if (serverName.includes(searchText)) {
+                    section.style.display = '';
+                    rows.forEach(row => row.style.display = '');
+                }
+            });
+        });
+    });
+</script>
+{% endblock %}
