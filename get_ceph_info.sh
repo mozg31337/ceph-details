@@ -472,31 +472,47 @@ done
 # Get Pool Information
 echo "Collecting pool information..."
 echo "## Pool Information" >> ceph-mapping.md
+echo "### Pool Usage" >> ceph-mapping.md
+echo "| Pool Name | Size | Used | Available | % Used |" >> ceph-mapping.md
+echo "|-----------|------|------|-----------|--------|" >> ceph-mapping.md
+
+# Get pool usage data
+pool_data=$(sudo ceph df detail 2>/dev/null)
 
 # Get list of pools
 pools=$(sudo ceph osd pool ls)
 
-# For each pool, get details
+# For each pool, extract usage information
 for pool in $pools; do
     echo "Processing pool $pool..."
-    echo "### Pool: $pool" >> ceph-mapping.md
-    echo "#### Pool Details" >> ceph-mapping.md
-    echo '```' >> ceph-mapping.md
-    sudo ceph osd pool get $pool all >> ceph-mapping.md
-    echo '```' >> ceph-mapping.md
-
-    echo "#### Pool Statistics" >> ceph-mapping.md
-    echo '```' >> ceph-mapping.md
-    sudo ceph df detail | grep -A 5 "$pool" >> ceph-mapping.md
-    echo '```' >> ceph-mapping.md
-
-    echo "#### CRUSH Rule" >> ceph-mapping.md
-    rule_id=$(sudo ceph osd pool get $pool crush_rule | awk '{print $2}')
-    echo '```' >> ceph-mapping.md
-    sudo ceph osd crush rule dump $rule_id >> ceph-mapping.md
-    echo '```' >> ceph-mapping.md
-    echo "" >> ceph-mapping.md
+    
+    # Extract pool statistics - first try with grep
+    pool_stats=$(echo "$pool_data" | grep -A 6 "^$pool " 2>/dev/null)
+    
+    if [[ ! -z "$pool_stats" ]]; then
+        # Parse size information
+        size=$(echo "$pool_stats" | grep "SIZE" | awk '{print $2}')
+        used=$(echo "$pool_stats" | grep "USED" | awk '{print $2}')
+        avail=$(echo "$pool_stats" | grep "AVAIL" | awk '{print $2}')
+        pcent=$(echo "$pool_stats" | grep "%" | awk '{print $2}')
+        
+        # Handle older Ceph versions with different output format
+        if [[ -z "$size" || -z "$used" || -z "$avail" || -z "$pcent" ]]; then
+            size=$(echo "$pool_stats" | awk 'NR==1 {print $3}')
+            used=$(echo "$pool_stats" | awk 'NR==1 {print $4}')
+            avail=$(echo "$pool_stats" | awk 'NR==1 {print $5}')
+            pcent=$(echo "$pool_stats" | awk 'NR==1 {print $6}')
+        fi
+    
+        # Add to the table
+        echo "| $pool | $size | $used | $avail | $pcent |" >> ceph-mapping.md
+    else
+        # If we couldn't get stats, just add the pool name
+        echo "| $pool | N/A | N/A | N/A | N/A |" >> ceph-mapping.md
+    fi
 done
+
+echo "" >> ceph-mapping.md
 
 # PG Information
 echo "Collecting PG information..."
