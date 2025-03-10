@@ -7,7 +7,21 @@ Flask application for displaying Ceph cluster information collected by get_ceph_
 import os
 import re
 import glob
+import configparser
 from flask import Flask, render_template, jsonify
+
+# Read configuration
+config = configparser.ConfigParser()
+config_path = os.path.join(os.path.dirname(__file__), 'config.conf')
+if os.path.exists(config_path):
+    config.read(config_path)
+else:
+    print(f"Warning: Config file {config_path} not found. Using defaults.")
+
+# Get app settings with defaults
+APP_PORT = config.getint('app', 'port', fallback=54321)
+APP_HOST = config.get('app', 'host', fallback='0.0.0.0')
+APP_DEBUG = config.getboolean('app', 'debug', fallback=True)
 
 app = Flask(__name__)
 
@@ -255,4 +269,5 @@ def api_server(server_name):
         return jsonify({'error': 'Server not found'})
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0')
+    print(f"Starting Ceph Dashboard on port {APP_PORT}")
+    app.run(debug=APP_DEBUG, host=APP_HOST, port=APP_PORT)

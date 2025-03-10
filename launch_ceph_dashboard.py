@@ -12,6 +12,22 @@ import webbrowser
 import socket
 import time
 import threading
+import configparser
+
+def read_config():
+    """Read configuration file and return config object."""
+    config = configparser.ConfigParser()
+    config_path = os.path.join(os.path.dirname(__file__), 'config.conf')
+    
+    if os.path.exists(config_path):
+        config.read(config_path)
+    else:
+        print(f"Warning: Config file {config_path} not found. Using defaults.")
+        # Create app section with defaults if not present
+        if 'app' not in config:
+            config['app'] = {}
+        
+    return config
 
 def get_free_port():
     """Find a free port on the system to run the app."""
@@ -37,17 +53,17 @@ def fetch_data():
         print("\nError: fetch_ceph_data.py not found in the current directory.")
         return False
 
-def launch_webapp(port):
+def launch_webapp(port, host, debug):
     """Launch the Flask web app on the specified port."""
     env = os.environ.copy()
     env["FLASK_APP"] = "app.py"
     
-    # Start Flask app with the specified port
-    process = subprocess.Popen(
-        [sys.executable, "-m", "flask", "run", "--host=0.0.0.0", f"--port={port}"],
-        env=env
-    )
-    
+    # Start Flask app with the specified port and host
+    cmd = [sys.executable, "-m", "flask", "run", f"--host={host}", f"--port={port}"]
+    if debug:
+        env["FLASK_DEBUG"] = "1"
+        
+    process = subprocess.Popen(cmd, env=env)
     return process
 
 def open_browser(url, delay=2):
@@ -62,6 +78,17 @@ def open_browser(url, delay=2):
 
 def main():
     """Main function to orchestrate data fetching and app launching."""
+    # Read configuration
+    config = read_config()
+    port = config.getint('app', 'port', fallback=54321)
+    host = config.get('app', 'host', fallback='0.0.0.0')
+    debug = config.getboolean('app', 'debug', fallback=True)
+    
+    # Check if port is specified via command line (overrides config file)
+    if len(sys.argv) > 1 and sys.argv[1].isdigit():
+        port = int(sys.argv[1])
+        print(f"Using command-line specified port: {port}")
+    
     # Ensure we have the required files
     if not os.path.exists("app.py"):
         print("Error: app.py not found in the current directory.")
@@ -77,11 +104,17 @@ def main():
     
     # Step 2: Launch the web app
     print("\n" + "=" * 60)
-    print("Step 2: Launching Ceph Dashboard web app...")
+    print(f"Step 2: Launching Ceph Dashboard web app on port {port}...")
     print("=" * 60)
     
-    # Get a free port to run the app
-    port = get_free_port()
+    # Check if the specified port is free, otherwise find a new one
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(('127.0.0.1', port))
+    except OSError:
+        print(f"Warning: Port {port} is already in use.")
+        port = get_free_port()
+        print(f"Using alternative port: {port}")
     
     # Construct the URL
     local_ip = socket.gethostbyname(socket.gethostname())
@@ -92,7 +125,7 @@ def main():
     ]
     
     # Launch the app
-    app_process = launch_webapp(port)
+    app_process = launch_webapp(port, host, debug)
     
     # Check if app is running
     time.sleep(2)
