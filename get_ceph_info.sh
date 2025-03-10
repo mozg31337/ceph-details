@@ -30,9 +30,6 @@ for cmd in ceph ceph-volume lsblk; do
         exit 1
     fi
 done
-# Clear progress line after completion
-echo -ne "                                                \r"
-echo "All OSDs processed successfully."
 
 # Create a flag to track if jq is available
 JQ_AVAILABLE=0
@@ -159,49 +156,101 @@ fi
 parse_ceph_volume_output() {
     local osd_info
     
-    echo "| OSD ID | Block Device | Device Path | DB Device | WAL Device |" >> ${OUTPUT_FILE}
-    echo "|:------:|:------------:|:------------:|:---------:|:----------:|" >> ${OUTPUT_FILE}
+    echo "| OSD ID | Block Device | Device Path | Type | DB Device | WAL Device |" >> ${OUTPUT_FILE}
+    echo "|:------:|:------------:|:------------:|:----:|:---------:|:----------:|" >> ${OUTPUT_FILE}
     
     for osd_id in $local_osds; do
+        # Get OSD info using ceph-volume
         osd_info=$(sudo ceph-volume lvm list "$osd_id" 2>/dev/null)
         if [[ $? -eq 0 && ! -z "$osd_info" ]]; then
-            # Extract device information
-            main_device=$(echo "$osd_info" | grep -P "^ +devices +")
-            if [[ ! -z "$main_device" ]]; then
-                main_device=$(echo "$main_device" | awk '{print $NF}')
-            else
-                main_device="Unknown"
+            # Initialize variables
+            main_device="Unknown"
+            block_path="Unknown"
+            device_type="Unknown"
+            db_device="Colocated"
+            wal_device="Colocated with DB"
+            
+            # Extract devices line which contains the actual physical device
+            devices_line=$(echo "$osd_info" | grep -P "^ +devices +")
+            if [[ ! -z "$devices_line" ]]; then
+                main_device=$(echo "$devices_line" | awk '{print $NF}')
+                
+                # Check if device exists and determine its type
+                if [[ -e "$main_device" ]]; then
+                    # Get base device name
+                    base_name=$(basename "$main_device")
+                    
+                    # Check rotational flag (1=HDD, 0=SSD)
+                    if [[ -e "/sys/block/$base_name/queue/rotational" ]]; then
+                        rotational=$(cat "/sys/block/$base_name/queue/rotational" 2>/dev/null)
+                        if [[ "$rotational" == "1" ]]; then
+                            device_type="HDD"
+                        else
+                            device_type="SSD"
+                        fi
+                    else
+                        # Try using lsblk
+                        rotational=$(sudo lsblk -d -o NAME,ROTA | grep "$base_name" | awk '{print $2}')
+                        if [[ "$rotational" == "1" ]]; then
+                            device_type="HDD"
+                        elif [[ "$rotational" == "0" ]]; then
+                            device_type="SSD"
+                        fi
+                    fi
+                fi
             fi
             
             # Extract block device path
-            block_path=$(echo "$osd_info" | grep "block device" | head -1 | awk '{print $NF}')
-            if [[ -z "$block_path" ]]; then
-                block_path="Unknown"
+            block_line=$(echo "$osd_info" | grep -A 1 "\[block\]" | grep "block device" | head -1)
+            if [[ ! -z "$block_line" ]]; then
+                block_path=$(echo "$block_line" | awk '{print $NF}')
             fi
             
             # Extract DB device information
-            db_device="Colocated"
-            db_line=$(echo "$osd_info" | grep -P "^ +db device +")
-            if [[ ! -z "$db_line" ]]; then
-                db_temp=$(echo "$db_line" | awk '{print $NF}')
-                if [[ "$db_temp" != "None" && "$db_temp" != "null" ]]; then
-                    db_device="$db_temp"
+            db_section=$(echo "$osd_info" | grep -A 20 "\[db\]")
+            if [[ ! -z "$db_section" ]]; then
+                db_line=$(echo "$db_section" | grep "db device" | head -1)
+                if [[ ! -z "$db_line" ]]; then
+                    db_temp=$(echo "$db_line" | awk '{print $NF}')
+                    if [[ "$db_temp" != "None" && "$db_temp" != "null" ]]; then
+                        db_device="$db_temp"
+                    fi
+                fi
+                
+                # Also try to extract DB device from devices line in DB section
+                db_devices_line=$(echo "$db_section" | grep -P "^ +devices +")
+                if [[ ! -z "$db_devices_line" ]]; then
+                    db_phys_device=$(echo "$db_devices_line" | awk '{print $NF}')
+                    if [[ ! -z "$db_phys_device" ]]; then
+                        db_device="$db_device (on $db_phys_device)"
+                    fi
                 fi
             fi
             
             # Extract WAL device information
-            wal_device="Colocated with DB"
-            wal_line=$(echo "$osd_info" | grep -P "^ +wal device +")
-            if [[ ! -z "$wal_line" ]]; then
-                wal_temp=$(echo "$wal_line" | awk '{print $NF}')
-                if [[ "$wal_temp" != "None" && "$wal_temp" != "null" ]]; then
-                    wal_device="$wal_temp"
+            wal_section=$(echo "$osd_info" | grep -A 20 "\[wal\]")
+            if [[ ! -z "$wal_section" ]]; then
+                wal_line=$(echo "$wal_section" | grep "wal device" | head -1)
+                if [[ ! -z "$wal_line" ]]; then
+                    wal_temp=$(echo "$wal_line" | awk '{print $NF}')
+                    if [[ "$wal_temp" != "None" && "$wal_temp" != "null" ]]; then
+                        wal_device="$wal_temp"
+                    fi
+                fi
+                
+                # Also try to extract WAL device from devices line in WAL section
+                wal_devices_line=$(echo "$wal_section" | grep -P "^ +devices +")
+                if [[ ! -z "$wal_devices_line" ]]; then
+                    wal_phys_device=$(echo "$wal_devices_line" | awk '{print $NF}')
+                    if [[ ! -z "$wal_phys_device" ]]; then
+                        wal_device="$wal_device (on $wal_phys_device)"
+                    fi
                 fi
             fi
             
-            echo "| $osd_id | $block_path | $main_device | $db_device | $wal_device |" >> ${OUTPUT_FILE}
+            echo "| $osd_id | $block_path | $main_device | $device_type | $db_device | $wal_device |" >> ${OUTPUT_FILE}
         else
-            echo "| $osd_id | Information not available | | | |" >> ${OUTPUT_FILE}
+            echo "| $osd_id | Information not available | | | | |" >> ${OUTPUT_FILE}
         fi
     done
 }
@@ -357,67 +406,198 @@ for osd_id in $local_osds; do
     wal_device="Colocated with DB"
     wal_size="N/A"
     
-    # Method 1: Try to get device info from ceph-volume lvm list
-    if command -v ceph-volume &> /dev/null; then
-        log_debug "Using ceph-volume to get device info for OSD $osd_id"
-        # First try JSON format if jq is available
-        if [[ $JQ_AVAILABLE -eq 1 ]]; then
-            log_debug "Attempting JSON format with jq"
-            lvm_info=$(sudo ceph-volume lvm list --format json 2>/dev/null)
-            if [[ $? -eq 0 && ! -z "$lvm_info" ]]; then
-                log_debug "Successfully retrieved JSON data from ceph-volume"
-                # Extract information about the OSD
-                osd_device=$(echo "$lvm_info" | jq -r ".[$osd_id].devices[]" 2>/dev/null | head -1)
-                # Try to get DB and WAL device info
-                db_device=$(echo "$lvm_info" | jq -r ".[$osd_id].tags.\"ceph.db_device\"" 2>/dev/null)
-                wal_device=$(echo "$lvm_info" | jq -r ".[$osd_id].tags.\"ceph.wal_device\"" 2>/dev/null)
+    # Get detailed OSD info using ceph-volume lvm list
+    osd_info=$(sudo ceph-volume lvm list "$osd_id" 2>/dev/null)
+    if [[ $? -eq 0 && ! -z "$osd_info" ]]; then
+        log_debug "Processing ceph-volume output for OSD $osd_id"
+        
+        # Extract physical device path from the devices line
+        block_section=$(echo "$osd_info" | grep -A 20 "\[block\]")
+        devices_line=$(echo "$block_section" | grep -P "^ +devices +")
+        if [[ ! -z "$devices_line" ]]; then
+            osd_device=$(echo "$devices_line" | awk '{print $NF}')
+            log_debug "Found device path for OSD $osd_id: $osd_device"
+            
+            # Get device properties if it exists
+            if [[ -e "$osd_device" ]]; then
+                base_name=$(basename "$osd_device")
+                log_debug "Base device name: $base_name"
                 
-                # If DB or WAL are not null or empty, update their values
-                if [[ "$db_device" != "null" && ! -z "$db_device" ]]; then
-                    db_size=$(echo "$lvm_info" | jq -r ".[$osd_id].tags.\"ceph.db_size\"" 2>/dev/null)
-                    # Convert bytes to human-readable size
-                    if [[ "$db_size" != "null" && ! -z "$db_size" && $BC_AVAILABLE -eq 1 ]]; then
-                        db_size=$(echo "scale=2; $db_size/1024/1024/1024" | bc -l)"G"
+                # Get device type (HDD/SSD)
+                if [[ -e "/sys/block/$base_name/queue/rotational" ]]; then
+                    rotational=$(cat "/sys/block/$base_name/queue/rotational" 2>/dev/null)
+                    if [[ "$rotational" == "1" ]]; then
+                        device_type="HDD"
+                    else
+                        device_type="SSD"
+                    fi
+                else
+                    # Try lsblk as fallback
+                    rotational=$(sudo lsblk -d -o NAME,ROTA | grep "$base_name" | awk '{print $2}')
+                    if [[ "$rotational" == "1" ]]; then
+                        device_type="HDD"
+                    elif [[ "$rotational" == "0" ]]; then
+                        device_type="SSD"
                     fi
                 fi
                 
-                if [[ "$wal_device" != "null" && ! -z "$wal_device" ]]; then
-                    wal_size=$(echo "$lvm_info" | jq -r ".[$osd_id].tags.\"ceph.wal_size\"" 2>/dev/null)
-                    # Convert bytes to human-readable size
-                    if [[ "$wal_size" != "null" && ! -z "$wal_size" && $BC_AVAILABLE -eq 1 ]]; then
-                        wal_size=$(echo "scale=2; $wal_size/1024/1024/1024" | bc -l)"G"
+                # Get size and model info using lsblk
+                size=$(sudo lsblk -d -n -o SIZE "$osd_device" 2>/dev/null || echo "Unknown")
+                model=$(sudo lsblk -d -n -o MODEL "$osd_device" 2>/dev/null || echo "Unknown")
+                
+                # Trim whitespace
+                size=$(echo "$size" | xargs)
+                model=$(echo "$model" | xargs)
+                
+                if [[ -z "$model" || "$model" == "Unknown" ]]; then
+                    # Try to get model from /sys if available
+                    if [[ -e "/sys/block/$base_name/device/model" ]]; then
+                        model=$(cat "/sys/block/$base_name/device/model" 2>/dev/null | xargs)
                     fi
                 fi
             fi
         else
-            # If jq is not available, use the regular format output and parse with grep/sed
-            lvm_info=$(sudo ceph-volume lvm list $osd_id 2>/dev/null)
-            if [[ $? -eq 0 && ! -z "$lvm_info" ]]; then
-                # Extract device information
-                devices_line=$(echo "$lvm_info" | grep -P "^ +devices +")
-                if [[ ! -z "$devices_line" ]]; then
-                    osd_device=$(echo "$devices_line" | awk '{print $NF}')
-                fi
+            # Try to find device from block path section
+            block_device_line=$(echo "$block_section" | grep "block device" | head -1)
+            if [[ ! -z "$block_device_line" ]]; then
+                block_path=$(echo "$block_device_line" | awk '{print $NF}')
+                log_debug "Found block path: $block_path"
                 
-                # Extract DB device information
-                db_line=$(echo "$lvm_info" | grep -P "^ +db device +")
-                if [[ ! -z "$db_line" ]]; then
-                    db_device=$(echo "$db_line" | awk '{print $NF}')
-                    if [[ "$db_device" != "None" && "$db_device" != "null" ]]; then
-                        # Try to get DB size from lsblk if possible
-                        db_base=$(basename "$db_device" | sed 's/[0-9]*$//')
-                        db_size=$(sudo lsblk -d -o NAME,SIZE | grep "$db_base" | awk '{print $2}')
+                # Extract the underlying physical device using lvs command
+                if [[ "$block_path" == "/dev/ceph"* || "$block_path" == "/dev/mapper"* ]]; then
+                    lv_name=$(basename "$block_path")
+                    phys_devs=$(sudo lvs --noheadings -o devices "$lv_name" 2>/dev/null | sed 's/(.*)//g' | tr -d ' ' || echo "Unknown")
+                    if [[ ! -z "$phys_devs" && "$phys_devs" != "Unknown" ]]; then
+                        osd_device=$(echo "$phys_devs" | cut -d',' -f1)
+                        log_debug "Resolved block device to physical device: $osd_device"
                     fi
                 fi
-                
-                # Extract WAL device information
-                wal_line=$(echo "$lvm_info" | grep -P "^ +wal device +")
-                if [[ ! -z "$wal_line" ]]; then
-                    wal_device=$(echo "$wal_line" | awk '{print $NF}')
-                    if [[ "$wal_device" != "None" && "$wal_device" != "null" ]]; then
-                        # Try to get WAL size from lsblk if possible
-                        wal_base=$(basename "$wal_device" | sed 's/[0-9]*$//')
-                        wal_size=$(sudo lsblk -d -o NAME,SIZE | grep "$wal_base" | awk '{print $2}')
+            fi
+        fi
+        
+        # Get DB device info
+        db_section=$(echo "$osd_info" | grep -A 20 "\[db\]")
+        if [[ ! -z "$db_section" ]]; then
+            db_device_line=$(echo "$db_section" | grep "db device" | head -1)
+            db_devices_line=$(echo "$db_section" | grep -P "^ +devices +" | head -1)
+            
+            if [[ ! -z "$db_device_line" ]]; then
+                db_path=$(echo "$db_device_line" | awk '{print $NF}')
+                if [[ "$db_path" != "None" && "$db_path" != "null" ]]; then
+                    db_device="$db_path"
+                    log_debug "Found DB device path: $db_device"
+                    
+                    # Try to get DB device size using lsblk
+                    if [[ -e "$db_path" ]]; then
+                        db_size=$(sudo lsblk -d -n -o SIZE "$db_path" 2>/dev/null || echo "Unknown")
+                        db_size=$(echo "$db_size" | xargs)
+                    fi
+                    
+                    # Also extract physical device
+                    if [[ ! -z "$db_devices_line" ]]; then
+                        db_phys_device=$(echo "$db_devices_line" | awk '{print $NF}')
+                        if [[ ! -z "$db_phys_device" ]]; then
+                            db_device="$db_device (on $db_phys_device)"
+                            log_debug "DB is on physical device: $db_phys_device"
+                        fi
+                    fi
+                fi
+            fi
+        fi
+        
+        # Get WAL device info
+        wal_section=$(echo "$osd_info" | grep -A 20 "\[wal\]")
+        if [[ ! -z "$wal_section" ]]; then
+            wal_device_line=$(echo "$wal_section" | grep "wal device" | head -1)
+            wal_devices_line=$(echo "$wal_section" | grep -P "^ +devices +" | head -1)
+            
+            if [[ ! -z "$wal_device_line" ]]; then
+                wal_path=$(echo "$wal_device_line" | awk '{print $NF}')
+                if [[ "$wal_path" != "None" && "$wal_path" != "null" ]]; then
+                    wal_device="$wal_path"
+                    log_debug "Found WAL device path: $wal_device"
+                    
+                    # Try to get WAL device size using lsblk
+                    if [[ -e "$wal_path" ]]; then
+                        wal_size=$(sudo lsblk -d -n -o SIZE "$wal_path" 2>/dev/null || echo "Unknown")
+                        wal_size=$(echo "$wal_size" | xargs)
+                    fi
+                    
+                    # Also extract physical device
+                    if [[ ! -z "$wal_devices_line" ]]; then
+                        wal_phys_device=$(echo "$wal_devices_line" | awk '{print $NF}')
+                        if [[ ! -z "$wal_phys_device" ]]; then
+                            wal_device="$wal_device (on $wal_phys_device)"
+                            log_debug "WAL is on physical device: $wal_phys_device"
+                        fi
+                    fi
+                fi
+            fi
+        fi
+    else
+        # Method 1: Try to get device info from ceph-volume lvm list
+        if command -v ceph-volume &> /dev/null; then
+            log_debug "Using ceph-volume to get device info for OSD $osd_id"
+            # First try JSON format if jq is available
+            if [[ $JQ_AVAILABLE -eq 1 ]]; then
+                log_debug "Attempting JSON format with jq"
+                lvm_info=$(sudo ceph-volume lvm list --format json 2>/dev/null)
+                if [[ $? -eq 0 && ! -z "$lvm_info" ]]; then
+                    log_debug "Successfully retrieved JSON data from ceph-volume"
+                    # Extract information about the OSD
+                    osd_device=$(echo "$lvm_info" | jq -r ".[$osd_id].devices[]" 2>/dev/null | head -1)
+                    # Try to get DB and WAL device info
+                    db_device=$(echo "$lvm_info" | jq -r ".[$osd_id].tags.\"ceph.db_device\"" 2>/dev/null)
+                    wal_device=$(echo "$lvm_info" | jq -r ".[$osd_id].tags.\"ceph.wal_device\"" 2>/dev/null)
+                    
+                    # If DB or WAL are not null or empty, update their values
+                    if [[ "$db_device" != "null" && ! -z "$db_device" ]]; then
+                        db_size=$(echo "$lvm_info" | jq -r ".[$osd_id].tags.\"ceph.db_size\"" 2>/dev/null)
+                        # Convert bytes to human-readable size
+                        if [[ "$db_size" != "null" && ! -z "$db_size" && $BC_AVAILABLE -eq 1 ]]; then
+                            db_size=$(echo "scale=2; $db_size/1024/1024/1024" | bc -l)"G"
+                        fi
+                    fi
+                    
+                    if [[ "$wal_device" != "null" && ! -z "$wal_device" ]]; then
+                        wal_size=$(echo "$lvm_info" | jq -r ".[$osd_id].tags.\"ceph.wal_size\"" 2>/dev/null)
+                        # Convert bytes to human-readable size
+                        if [[ "$wal_size" != "null" && ! -z "$wal_size" && $BC_AVAILABLE -eq 1 ]]; then
+                            wal_size=$(echo "scale=2; $wal_size/1024/1024/1024" | bc -l)"G"
+                        fi
+                    fi
+                fi
+            else
+                # If jq is not available, use the regular format output and parse with grep/sed
+                lvm_info=$(sudo ceph-volume lvm list $osd_id 2>/dev/null)
+                if [[ $? -eq 0 && ! -z "$lvm_info" ]]; then
+                    # Extract device information
+                    devices_line=$(echo "$lvm_info" | grep -P "^ +devices +")
+                    if [[ ! -z "$devices_line" ]]; then
+                        osd_device=$(echo "$devices_line" | awk '{print $NF}')
+                    fi
+                    
+                    # Extract DB device information
+                    db_line=$(echo "$lvm_info" | grep -P "^ +db device +")
+                    if [[ ! -z "$db_line" ]]; then
+                        db_device=$(echo "$db_line" | awk '{print $NF}')
+                        if [[ "$db_device" != "None" && "$db_device" != "null" ]]; then
+                            # Try to get DB size from lsblk if possible
+                            db_base=$(basename "$db_device" | sed 's/[0-9]*$//')
+                            db_size=$(sudo lsblk -d -o NAME,SIZE | grep "$db_base" | awk '{print $2}')
+                        fi
+                    fi
+                    
+                    # Extract WAL device information
+                    wal_line=$(echo "$lvm_info" | grep -P "^ +wal device +")
+                    if [[ ! -z "$wal_line" ]]; then
+                        wal_device=$(echo "$wal_line" | awk '{print $NF}')
+                        if [[ "$wal_device" != "None" && "$wal_device" != "null" ]]; then
+                            # Try to get WAL size from lsblk if possible
+                            wal_base=$(basename "$wal_device" | sed 's/[0-9]*$//')
+                            wal_size=$(sudo lsblk -d -o NAME,SIZE | grep "$
+                            wal_base" | awk '{print $2}')
+                        fi
                     fi
                 fi
             fi
@@ -569,6 +749,10 @@ for osd_id in $local_osds; do
     log_debug "Adding OSD $osd_id data to the table"
     echo "| $osd_id | $osd_device | $device_type | $size | $model | $db_device | $db_size | $wal_device | $wal_size |" >> ${OUTPUT_FILE}
 done
+
+# Clear progress line after completion
+echo -ne "                                                \r"
+echo "All OSDs processed successfully."
 
 # Get Pool Information
 echo "Collecting pool information..."

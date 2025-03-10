@@ -12,6 +12,7 @@ import configparser
 import getpass
 from pathlib import Path
 import time
+import re
 
 def read_config(config_path):
     """Read configuration file and return config object."""
@@ -48,6 +49,43 @@ def validate_config(config):
     if not config['servers']:
         print(f"Error: No servers specified in the [servers] section.")
         sys.exit(1)
+
+def wait_for_prompt(channel, timeout=20):
+    """Wait for shell prompt with timeout and better detection."""
+    output = b''
+    start_time = time.time()
+    
+    # Common shell prompt patterns
+    prompt_patterns = [
+        b'$ ',        # Basic bash prompt
+        b'> ',        # Some shells
+        b'# ',        # Root prompt
+        b'%',         # zsh prompt
+        b']$ ',       # Common pattern with hostname
+        b':\\S+>',    # Windows command prompt
+        b'~[$#>] '    # Home directory indicators
+    ]
+    
+    while time.time() - start_time < timeout:
+        if channel.recv_ready():
+            chunk = channel.recv(1024)
+            output += chunk
+            print(f"Debug - received: {chunk}")  # Debug output
+            
+            # Check for shell prompts
+            for pattern in prompt_patterns:
+                if re.search(pattern, output):
+                    return output
+                
+            # Also check for login: or Password: prompts which indicate issues
+            if re.search(b'[Ll]ogin:', output) or re.search(b'[Pp]assword:', output):
+                print(f"Warning: Received login/password prompt which suggests authentication issue")
+                return output
+        
+        time.sleep(0.1)
+    
+    print(f"Warning: Timed out waiting for prompt. Last output: {output}")
+    return output
 
 def execute_remote_script_and_fetch_output(config):
     """
@@ -106,7 +144,8 @@ def execute_remote_script_and_fetch_output(config):
                             sys.exit(1)
                         
             try:
-                ssh.connect(server_ip, username=username, pkey=private_key)
+                ssh.connect(server_ip, username=username, pkey=private_key, timeout=10)
+                print(f"Successfully connected to {server_name}")
             except paramiko.ssh_exception.PasswordRequiredException:
                 print(f"Error: SSH key requires a password. Please set key_requires_password=true in config.")
                 sys.exit(1)
@@ -122,36 +161,38 @@ def execute_remote_script_and_fetch_output(config):
             channel.resize_pty(width=200, height=50)
             
             # Wait for initial prompt
-            output = b''
-            while not output.endswith(b'$ '):
-                if channel.recv_ready():
-                    chunk = channel.recv(1024)
-                    output += chunk
-                time.sleep(0.1)
+            print("Waiting for shell prompt...")
+            output = wait_for_prompt(channel)
+            if not output:
+                print(f"Error: Failed to get shell prompt from {server_name}")
+                servers_failed += 1
+                continue
+                
+            print("Shell prompt received, proceeding...")
             
             # Navigate to the directory containing the script
             script_dir = os.path.dirname(remote_script_path)
             script_name = os.path.basename(remote_script_path)
             
             if script_dir:
+                print(f"Changing to directory: {script_dir}")
                 channel.send(f"cd {script_dir}\n")
                 # Wait for completion
-                output = b''
-                while not output.endswith(b'$ '):
-                    if channel.recv_ready():
-                        chunk = channel.recv(1024)
-                        output += chunk
-                    time.sleep(0.1)
+                output = wait_for_prompt(channel)
+                if not output:
+                    print(f"Error: Failed to change directory on {server_name}")
+                    servers_failed += 1
+                    continue
             
             # Make the script executable
+            print("Making script executable...")
             channel.send(f"chmod +x {script_name}\n")
             # Wait for completion
-            output = b''
-            while not output.endswith(b'$ '):
-                if channel.recv_ready():
-                    chunk = channel.recv(1024)
-                    output += chunk
-                time.sleep(0.1)
+            output = wait_for_prompt(channel)
+            if not output:
+                print(f"Error: Failed to make script executable on {server_name}")
+                servers_failed += 1
+                continue
             
             # Run the script with sudo
             print(f"Running get_ceph_info.sh on {server_name} with sudo (this may take several minutes)...")
@@ -161,33 +202,74 @@ def execute_remote_script_and_fetch_output(config):
             output = b''
             sudo_prompted = False
             script_completed = False
+            start_time = time.time()
             
-            # Wait for sudo password prompt or completion
-            while not script_completed:
+            # Wait for sudo password prompt or completion with timeout
+            max_wait_time = 600  # 10 minutes max wait
+            
+            while not script_completed and (time.time() - start_time) < max_wait_time:
                 if channel.recv_ready():
                     chunk = channel.recv(1024)
+                    print(f"Debug - received chunk: {chunk[:50]}...") # Show first 50 bytes
                     output += chunk
                     
                     # Check for sudo password prompt
-                    if b'password for' in output.lower() and not sudo_prompted:
+                    if (b'password for' in output.lower() or b'password:' in output.lower()) and not sudo_prompted:
+                        print("Sending sudo password...")
                         channel.send(sudo_password + '\n')
                         sudo_prompted = True
                     
                     # Check if script has completed
-                    if b'Results saved to ceph-mapping.md' in output:
+                    if b'Results saved to' in output or b'ceph-mapping.md' in output or b'ceph-details-output' in output:
                         script_completed = True
                         print(f"Script execution completed on {server_name}")
+                        break
                 
                 time.sleep(0.5)
+            
+            if not script_completed:
+                print(f"Error: Script execution timed out on {server_name} after {max_wait_time} seconds")
+                print(f"Last output: {output}")
+                servers_failed += 1
+                continue
             
             # Now download the output file using SFTP
             sftp = ssh.open_sftp()
             
-            # Determine the path of the output file
-            if script_dir:
-                remote_output_path = f"{script_dir}/ceph-mapping.md"
-            else:
-                remote_output_path = "./ceph-mapping.md"
+            # Look for output file with more flexible naming
+            print("Searching for output file...")
+            
+            # Check script directory for output files
+            output_patterns = [
+                "ceph-mapping.md", 
+                "ceph-details-output*.md"
+            ]
+            
+            found_output_file = False
+            remote_output_path = None
+            
+            for pattern in output_patterns:
+                try:
+                    if script_dir:
+                        cmd = f"find {script_dir} -name '{pattern}' -type f -mmin -10 | sort -r | head -1"
+                    else:
+                        cmd = f"find . -name '{pattern}' -type f -mmin -10 | sort -r | head -1"
+                        
+                    stdin, stdout, stderr = ssh.exec_command(cmd)
+                    found_files = stdout.read().decode().strip().split('\n')
+                    
+                    if found_files and found_files[0]:
+                        remote_output_path = found_files[0]
+                        found_output_file = True
+                        print(f"Found output file: {remote_output_path}")
+                        break
+                except Exception as e:
+                    print(f"Error searching for output file pattern {pattern}: {str(e)}")
+            
+            if not found_output_file:
+                print(f"Error: Could not find output file on {server_name}")
+                servers_failed += 1
+                continue
                 
             local_file = output_dir / f"ceph-details-output-{server_name}.md"
             
