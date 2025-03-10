@@ -88,9 +88,24 @@ def execute_remote_script_and_fetch_output(config):
         try:
             print(f"Connecting to {server_name} ({server_ip})...")
             
-            # Load private key
+            # Load private key - determine key type and use appropriate loader
             try:
-                private_key = paramiko.RSAKey.from_private_key_file(key_file, password=key_password)
+                # Try to load the key and determine its type automatically
+                private_key = paramiko.Ed25519Key.from_private_key_file(key_file, password=key_password)
+            except paramiko.ssh_exception.SSHException:
+                try:
+                    private_key = paramiko.RSAKey.from_private_key_file(key_file, password=key_password)
+                except paramiko.ssh_exception.SSHException:
+                    try:
+                        private_key = paramiko.ECDSAKey.from_private_key_file(key_file, password=key_password)
+                    except paramiko.ssh_exception.SSHException:
+                        try:
+                            private_key = paramiko.DSSKey.from_private_key_file(key_file, password=key_password)
+                        except paramiko.ssh_exception.SSHException:
+                            print(f"Error: Unable to determine the type of the SSH key {key_file} or key is invalid.")
+                            sys.exit(1)
+                        
+            try:
                 ssh.connect(server_ip, username=username, pkey=private_key)
             except paramiko.ssh_exception.PasswordRequiredException:
                 print(f"Error: SSH key requires a password. Please set key_requires_password=true in config.")
