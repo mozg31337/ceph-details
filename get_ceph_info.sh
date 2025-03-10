@@ -30,6 +30,9 @@ for cmd in ceph ceph-volume lsblk; do
         exit 1
     fi
 done
+# Clear progress line after completion
+echo -ne "                                                \r"
+echo "All OSDs processed successfully."
 
 # Create a flag to track if jq is available
 JQ_AVAILABLE=0
@@ -49,11 +52,23 @@ else
     log_debug "bc not found, will use alternative calculation methods"
 fi
 
+# Get hostname for output file and sanitize it
+HOST_NAME=$(hostname | tr -cd '[:alnum:]._-')
+TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+OUTPUT_FILE="ceph-details-output-${HOST_NAME}-${TIMESTAMP}.md"
+
 # Initialize the markdown file
-cat > ceph-mapping.md << EOF
+cat > ${OUTPUT_FILE} << EOF
 # Ceph Cluster Mapping
 
 *Generated on: $(date)*
+*Server: ${HOST_NAME}*
+
+## Notes and Legend
+- **HDD/SSD**: Indicates the storage device type for each OSD
+- **DB Device**: BlueStore's internal metadata database location
+- **WAL Device**: BlueStore's write-ahead log location
+- **'Colocated'**: Means the DB/WAL is on the same device as the OSD data
 
 ## Cluster Overview
 
@@ -61,42 +76,42 @@ EOF
 
 # Get cluster status
 echo "Collecting cluster status..."
-echo "### Cluster Status" >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-sudo ceph status >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-echo "" >> ceph-mapping.md
+echo "### Cluster Status" >> ${OUTPUT_FILE}
+echo '```' >> ${OUTPUT_FILE}
+sudo ceph status >> ${OUTPUT_FILE}
+echo '```' >> ${OUTPUT_FILE}
+echo "" >> ${OUTPUT_FILE}
 
 # Get Ceph version
-echo "### Ceph Version" >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-sudo ceph version >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-echo "" >> ceph-mapping.md
+echo "### Ceph Version" >> ${OUTPUT_FILE}
+echo '```' >> ${OUTPUT_FILE}
+sudo ceph version >> ${OUTPUT_FILE}
+echo '```' >> ${OUTPUT_FILE}
+echo "" >> ${OUTPUT_FILE}
 
 # Get cluster health
 echo "Collecting health information..."
-echo "### Cluster Health" >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-sudo ceph health detail >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-echo "" >> ceph-mapping.md
+echo "### Cluster Health" >> ${OUTPUT_FILE}
+echo '```' >> ${OUTPUT_FILE}
+sudo ceph health detail >> ${OUTPUT_FILE}
+echo '```' >> ${OUTPUT_FILE}
+echo "" >> ${OUTPUT_FILE}
 
 # Get OSD tree
 echo "Collecting OSD information..."
-echo "## OSD Information" >> ceph-mapping.md
-echo "### OSD Tree" >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-sudo ceph osd tree >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-echo "" >> ceph-mapping.md
+echo "## OSD Information" >> ${OUTPUT_FILE}
+echo "### OSD Tree" >> ${OUTPUT_FILE}
+echo '```' >> ${OUTPUT_FILE}
+sudo ceph osd tree >> ${OUTPUT_FILE}
+echo '```' >> ${OUTPUT_FILE}
+echo "" >> ${OUTPUT_FILE}
 
 # Get OSD df
-echo "### OSD Storage Utilization" >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-sudo ceph osd df >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-echo "" >> ceph-mapping.md
+echo "### OSD Storage Utilization" >> ${OUTPUT_FILE}
+echo '```' >> ${OUTPUT_FILE}
+sudo ceph osd df >> ${OUTPUT_FILE}
+echo '```' >> ${OUTPUT_FILE}
+echo "" >> ${OUTPUT_FILE}
 
 # Get list of OSDs that are local to this server
 echo "Identifying local OSDs..."
@@ -132,20 +147,20 @@ fi
 # If we still don't have any local OSDs, log an error
 if [[ -z "$local_osds" ]]; then
     log_error "Failed to identify any local OSDs. Continuing with other sections..."
-    echo "Error: Failed to identify any local OSDs. This section will be incomplete." >> ceph-mapping.md
+    echo "Error: Failed to identify any local OSDs. This section will be incomplete." >> ${OUTPUT_FILE}
 else
     log_debug "Found $(echo $local_osds | wc -w) local OSDs: $local_osds"
-    echo "### Local OSDs" >> ceph-mapping.md
-    echo "This server hosts the following OSDs: $(echo $local_osds | tr ' ' ',')" >> ceph-mapping.md
-    echo "" >> ceph-mapping.md
+    echo "### Local OSDs" >> ${OUTPUT_FILE}
+    echo "This server hosts the following OSDs: $(echo $local_osds | tr ' ' ',')" >> ${OUTPUT_FILE}
+    echo "" >> ${OUTPUT_FILE}
 fi
 
 # Function to parse the ceph-volume lvm list output for local OSDs only
 parse_ceph_volume_output() {
     local osd_info
     
-    echo "| OSD ID | Block Device | Device Path | DB Device | WAL Device |" >> ceph-mapping.md
-    echo "|--------|-------------|-------------|-----------|------------|" >> ceph-mapping.md
+    echo "| OSD ID | Block Device | Device Path | DB Device | WAL Device |" >> ${OUTPUT_FILE}
+    echo "|:------:|:------------:|:------------:|:---------:|:----------:|" >> ${OUTPUT_FILE}
     
     for osd_id in $local_osds; do
         osd_info=$(sudo ceph-volume lvm list "$osd_id" 2>/dev/null)
@@ -184,28 +199,28 @@ parse_ceph_volume_output() {
                 fi
             fi
             
-            echo "| $osd_id | $block_path | $main_device | $db_device | $wal_device |" >> ceph-mapping.md
+            echo "| $osd_id | $block_path | $main_device | $db_device | $wal_device |" >> ${OUTPUT_FILE}
         else
-            echo "| $osd_id | Information not available | | | |" >> ceph-mapping.md
+            echo "| $osd_id | Information not available | | | |" >> ${OUTPUT_FILE}
         fi
     done
 }
 
 # Get Disk Types (HDD/SSD) and device information
 echo "Collecting disk type information..."
-echo "## Storage Device Information" >> ceph-mapping.md
-echo "### OSD to Device Mapping from ceph-volume" >> ceph-mapping.md
-echo "" >> ceph-mapping.md
+echo "## Storage Device Information" >> ${OUTPUT_FILE}
+echo "### OSD to Device Mapping from ceph-volume" >> ${OUTPUT_FILE}
+echo "" >> ${OUTPUT_FILE}
 
 # Use the function to parse ceph-volume output for local OSDs
 parse_ceph_volume_output
 
-echo "" >> ceph-mapping.md
+echo "" >> ${OUTPUT_FILE}
 
 # Get streamlined OSD metadata for local OSDs only
-echo "### OSD Metadata (Streamlined)" >> ceph-mapping.md
-echo "| OSD ID | Size | Data Path | Device Path | Partition Path | DB Path | WAL Path |" >> ceph-mapping.md
-echo "|--------|------|-----------|-------------|----------------|---------|----------|" >> ceph-mapping.md
+echo "### OSD Metadata (Streamlined)" >> ${OUTPUT_FILE}
+echo "| OSD ID | Size | Data Path | Device Path | Partition Path | DB Path | WAL Path |" >> ${OUTPUT_FILE}
+echo "|:------:|:----:|:---------:|:-----------:|:--------------:|:-------:|:--------:|" >> ${OUTPUT_FILE}
 
 for osd_id in $local_osds; do
     # Get metadata for this OSD
@@ -308,26 +323,29 @@ for osd_id in $local_osds; do
     fi
     
     # Output to the table
-    echo "| $osd_id | $size | $data_path | $device_path | $partition_path | $db_path | $wal_path |" >> ceph-mapping.md
+    echo "| $osd_id | $size | $data_path | $device_path | $partition_path | $db_path | $wal_path |" >> ${OUTPUT_FILE}
     log_debug "Added OSD $osd_id metadata to table"
 done
 
-echo "" >> ceph-mapping.md
+echo "" >> ${OUTPUT_FILE}
 
 # Get detailed disk information for local OSDs
-echo "### Detailed Disk Information" >> ceph-mapping.md
-echo "" >> ceph-mapping.md
+echo "### Detailed Disk Information" >> ${OUTPUT_FILE}
+echo "" >> ${OUTPUT_FILE}
 
-echo "| OSD ID | Device Path | Type | Size | Model | DB Device | DB Size | WAL Device | WAL Size |" >> ceph-mapping.md
-echo "|--------|-------------|------|------|-------|-----------|---------|------------|----------|" >> ceph-mapping.md
+echo "| OSD ID | Device Path | Type | Size | Model | DB Device | DB Size | WAL Device | WAL Size |" >> ${OUTPUT_FILE}
+echo "|:------:|:-----------:|:----:|:----:|:-----:|:---------:|:-------:|:----------:|:--------:|" >> ${OUTPUT_FILE}
 
-# Track progress
+# Track progress and display percentage
 total_osds=$(echo $local_osds | wc -w)
 processed=0
 
+echo "Processing $total_osds local OSDs..."
 for osd_id in $local_osds; do
-    echo "Processing OSD $osd_id..."
-    log_debug "Beginning processing for OSD $osd_id (Progress: $((++processed))/$total_osds)"
+    # Calculate and display progress
+    processed=$((processed+1))
+    percent=$((processed*100/total_osds))
+    echo -ne "Processing OSD $osd_id... ($percent% complete)\r"
     
     # Initialize variables with default values
     osd_device="Unknown"
@@ -549,15 +567,15 @@ for osd_id in $local_osds; do
 
     # Add the row to the table
     log_debug "Adding OSD $osd_id data to the table"
-    echo "| $osd_id | $osd_device | $device_type | $size | $model | $db_device | $db_size | $wal_device | $wal_size |" >> ceph-mapping.md
+    echo "| $osd_id | $osd_device | $device_type | $size | $model | $db_device | $db_size | $wal_device | $wal_size |" >> ${OUTPUT_FILE}
 done
 
 # Get Pool Information
 echo "Collecting pool information..."
-echo "## Pool Information" >> ceph-mapping.md
-echo "### Pool Usage" >> ceph-mapping.md
-echo "| Pool Name | Size | Used | Available | % Used |" >> ceph-mapping.md
-echo "|-----------|------|------|-----------|--------|" >> ceph-mapping.md
+echo "## Pool Information" >> ${OUTPUT_FILE}
+echo "### Pool Usage" >> ${OUTPUT_FILE}
+echo "| Pool Name | Size | Used | Available | % Used |" >> ${OUTPUT_FILE}
+echo "|:---------:|:----:|:----:|:---------:|:------:|" >> ${OUTPUT_FILE}
 
 # Get pool usage data
 pool_data=$(sudo ceph df detail 2>/dev/null)
@@ -588,49 +606,43 @@ for pool in $pools; do
         fi
     
         # Add to the table
-        echo "| $pool | $size | $used | $avail | $pcent |" >> ceph-mapping.md
+        echo "| $pool | $size | $used | $avail | $pcent |" >> ${OUTPUT_FILE}
     else
         # If we couldn't get stats, just add the pool name
-        echo "| $pool | N/A | N/A | N/A | N/A |" >> ceph-mapping.md
+        echo "| $pool | N/A | N/A | N/A | N/A |" >> ${OUTPUT_FILE}
     fi
 done
 
-echo "" >> ceph-mapping.md
+echo "" >> ${OUTPUT_FILE}
 
 # PG Information
 echo "Collecting PG information..."
-echo "## Placement Group Information" >> ceph-mapping.md
-echo "### PG Status" >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-sudo ceph pg stat >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-echo "" >> ceph-mapping.md
+echo "## Placement Group Information" >> ${OUTPUT_FILE}
+echo "### PG Status" >> ${OUTPUT_FILE}
+echo '```' >> ${OUTPUT_FILE}
+sudo ceph pg stat >> ${OUTPUT_FILE}
+echo '```' >> ${OUTPUT_FILE}
+echo "" >> ${OUTPUT_FILE}
 
 # Add additional section with lsblk information for all devices
-echo "## System Storage Overview" >> ceph-mapping.md
-echo "### All Block Devices" >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-sudo lsblk -o NAME,SIZE,TYPE,MODEL,MOUNTPOINT,FSTYPE >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-echo "" >> ceph-mapping.md
+echo "## System Storage Overview" >> ${OUTPUT_FILE}
+echo "### All Block Devices" >> ${OUTPUT_FILE}
+echo '```' >> ${OUTPUT_FILE}
+sudo lsblk -o NAME,SIZE,TYPE,MODEL,MOUNTPOINT,FSTYPE >> ${OUTPUT_FILE}
+echo '```' >> ${OUTPUT_FILE}
+echo "" >> ${OUTPUT_FILE}
 
-echo "### LVM Configuration" >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-sudo pvs >> ceph-mapping.md
-echo "" >> ceph-mapping.md
-sudo vgs >> ceph-mapping.md
-echo "" >> ceph-mapping.md
-sudo lvs >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-echo "" >> ceph-mapping.md
+echo "### LVM Configuration" >> ${OUTPUT_FILE}
+echo '```' >> ${OUTPUT_FILE}
+sudo pvs >> ${OUTPUT_FILE}
+echo "" >> ${OUTPUT_FILE}
+sudo vgs >> ${OUTPUT_FILE}
+echo "" >> ${OUTPUT_FILE}
+sudo lvs >> ${OUTPUT_FILE}
+echo '```' >> ${OUTPUT_FILE}
+echo "" >> ${OUTPUT_FILE}
 
 # Add a note about how to read the mapping
-echo "## Notes" >> ceph-mapping.md
-echo "- **HDD/SSD**: Indicates the storage device type for each OSD" >> ceph-mapping.md
-echo "- **DB Device**: BlueStore's internal metadata database location" >> ceph-mapping.md
-echo "- **WAL Device**: BlueStore's write-ahead log location" >> ceph-mapping.md
-echo "- **'Colocated'**: Means the DB/WAL is on the same device as the OSD data" >> ceph-mapping.md
-echo "" >> ceph-mapping.md
-
+# Remove the duplicated notes section at the end
 echo "Ceph cluster information collected successfully!"
-echo "Results saved to ceph-mapping.md"
+echo "Results saved to ${OUTPUT_FILE}"
