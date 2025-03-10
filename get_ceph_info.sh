@@ -59,84 +59,6 @@ cat > ceph-mapping.md << EOF
 
 EOF
 
-# Function to parse the ceph-volume lvm list output
-parse_ceph_volume_output() {
-    local osd_info
-    local current_osd=""
-    local in_block=false
-    local in_db=false
-    local in_wal=false
-    local db_device=""
-    local wal_device=""
-    local main_device=""
-    
-    osd_info=$(sudo ceph-volume lvm list)
-    
-    {
-        echo "| OSD ID | Block Device | Device Path | DB Device | WAL Device |"
-        echo "|--------|-------------|-------------|-----------|------------|"
-        
-        while IFS= read -r line; do
-            # Detect OSD ID
-            if [[ $line =~ ====\ osd\.([0-9]+)\ ==== ]]; then
-                current_osd="${BASH_REMATCH[1]}"
-                in_block=false
-                in_db=false
-                in_wal=false
-                db_device=""
-                wal_device=""
-                main_device=""
-            fi
-            
-            # Detect section
-            if [[ $line =~ \[block\] ]]; then
-                in_block=true
-                in_db=false
-                in_wal=false
-            elif [[ $line =~ \[db\] ]]; then
-                in_block=false
-                in_db=true
-                in_wal=false
-            elif [[ $line =~ \[wal\] ]]; then
-                in_block=false
-                in_db=false
-                in_wal=true
-            fi
-            
-            # Extract devices information
-            if [[ $line =~ devices\ +(.+) ]]; then
-                main_device="${BASH_REMATCH[1]}"
-            fi
-            
-            # Extract DB device
-            if [[ $line =~ db\ device\ +(.+) && ! -z "${BASH_REMATCH[1]}" && "${BASH_REMATCH[1]}" != "None" ]]; then
-                db_device="${BASH_REMATCH[1]}"
-            fi
-            
-            # Extract WAL device
-            if [[ $line =~ wal\ device\ +(.+) && ! -z "${BASH_REMATCH[1]}" && "${BASH_REMATCH[1]}" != "None" ]]; then
-                wal_device="${BASH_REMATCH[1]}"
-            fi
-            
-            # Output complete OSD info when we hit a blank line after block section
-            if [[ -z $line && $in_block == false && ! -z $current_osd && ! -z $main_device ]]; then
-                # Get block device path
-                local block_path=$(sudo ceph-volume lvm list $current_osd | grep "block device" | head -1 | awk '{print $NF}')
-                echo "| $current_osd | $block_path | $main_device | $db_device | $wal_device |"
-                
-                # Reset for next OSD
-                current_osd=""
-                in_block=false
-                in_db=false
-                in_wal=false
-                db_device=""
-                wal_device=""
-                main_device=""
-            fi
-        done < <(echo "$osd_info")
-    } >> ceph-mapping.md
-}
-
 # Get cluster status
 echo "Collecting cluster status..."
 echo "### Cluster Status" >> ceph-mapping.md
@@ -176,12 +98,98 @@ sudo ceph osd df >> ceph-mapping.md
 echo '```' >> ceph-mapping.md
 echo "" >> ceph-mapping.md
 
-# Get OSD metadata
-echo "### OSD Metadata" >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-sudo ceph osd metadata >> ceph-mapping.md
-echo '```' >> ceph-mapping.md
-echo "" >> ceph-mapping.md
+# Get list of OSDs that are local to this server
+echo "Identifying local OSDs..."
+local_osds=""
+
+# Method 1: Check local OSD directories
+if [[ -d "/var/lib/ceph/osd/" ]]; then
+    for osd_dir in /var/lib/ceph/osd/ceph-*; do
+        if [[ -d "$osd_dir" ]]; then
+            osd_id=$(basename "$osd_dir" | sed 's/ceph-//')
+            local_osds="$local_osds $osd_id"
+            log_debug "Found local OSD directory: $osd_dir for OSD $osd_id"
+        fi
+    done
+fi
+
+# Method 2: Use ceph-volume to list local OSDs (as backup)
+if [[ -z "$local_osds" ]]; then
+    if command -v ceph-volume &> /dev/null; then
+        cv_output=$(sudo ceph-volume lvm list 2>/dev/null)
+        if [[ $? -eq 0 && ! -z "$cv_output" ]]; then
+            while read -r line; do
+                if [[ $line =~ osd\.([0-9]+) ]]; then
+                    osd_id="${BASH_REMATCH[1]}"
+                    local_osds="$local_osds $osd_id"
+                    log_debug "Found local OSD via ceph-volume: $osd_id"
+                fi
+            done < <(echo "$cv_output" | grep -E "====.osd\.[0-9]+.====")
+        fi
+    fi
+fi
+
+# If we still don't have any local OSDs, log an error
+if [[ -z "$local_osds" ]]; then
+    log_error "Failed to identify any local OSDs. Continuing with other sections..."
+    echo "Error: Failed to identify any local OSDs. This section will be incomplete." >> ceph-mapping.md
+else
+    log_debug "Found $(echo $local_osds | wc -w) local OSDs: $local_osds"
+    echo "### Local OSDs" >> ceph-mapping.md
+    echo "This server hosts the following OSDs: $(echo $local_osds | tr ' ' ',')" >> ceph-mapping.md
+    echo "" >> ceph-mapping.md
+fi
+
+# Function to parse the ceph-volume lvm list output for local OSDs only
+parse_ceph_volume_output() {
+    local osd_info
+    
+    echo "| OSD ID | Block Device | Device Path | DB Device | WAL Device |" >> ceph-mapping.md
+    echo "|--------|-------------|-------------|-----------|------------|" >> ceph-mapping.md
+    
+    for osd_id in $local_osds; do
+        osd_info=$(sudo ceph-volume lvm list "$osd_id" 2>/dev/null)
+        if [[ $? -eq 0 && ! -z "$osd_info" ]]; then
+            # Extract device information
+            main_device=$(echo "$osd_info" | grep -P "^ +devices +")
+            if [[ ! -z "$main_device" ]]; then
+                main_device=$(echo "$main_device" | awk '{print $NF}')
+            else
+                main_device="Unknown"
+            fi
+            
+            # Extract block device path
+            block_path=$(echo "$osd_info" | grep "block device" | head -1 | awk '{print $NF}')
+            if [[ -z "$block_path" ]]; then
+                block_path="Unknown"
+            fi
+            
+            # Extract DB device information
+            db_device="Colocated"
+            db_line=$(echo "$osd_info" | grep -P "^ +db device +")
+            if [[ ! -z "$db_line" ]]; then
+                db_temp=$(echo "$db_line" | awk '{print $NF}')
+                if [[ "$db_temp" != "None" && "$db_temp" != "null" ]]; then
+                    db_device="$db_temp"
+                fi
+            fi
+            
+            # Extract WAL device information
+            wal_device="Colocated with DB"
+            wal_line=$(echo "$osd_info" | grep -P "^ +wal device +")
+            if [[ ! -z "$wal_line" ]]; then
+                wal_temp=$(echo "$wal_line" | awk '{print $NF}')
+                if [[ "$wal_temp" != "None" && "$wal_temp" != "null" ]]; then
+                    wal_device="$wal_temp"
+                fi
+            fi
+            
+            echo "| $osd_id | $block_path | $main_device | $db_device | $wal_device |" >> ceph-mapping.md
+        else
+            echo "| $osd_id | Information not available | | | |" >> ceph-mapping.md
+        fi
+    done
+}
 
 # Get Disk Types (HDD/SSD) and device information
 echo "Collecting disk type information..."
@@ -189,30 +197,52 @@ echo "## Storage Device Information" >> ceph-mapping.md
 echo "### OSD to Device Mapping from ceph-volume" >> ceph-mapping.md
 echo "" >> ceph-mapping.md
 
-# Use the function to parse ceph-volume output
+# Use the function to parse ceph-volume output for local OSDs
 parse_ceph_volume_output
 
 echo "" >> ceph-mapping.md
+
+# Get streamlined OSD metadata for local OSDs only
+echo "### OSD Metadata (Streamlined)" >> ceph-mapping.md
+echo "| OSD ID | Size | Data Path | Device Path | Partition Path | DB Path | WAL Path |" >> ceph-mapping.md
+echo "|--------|------|-----------|-------------|----------------|---------|----------|" >> ceph-mapping.md
+
+for osd_id in $local_osds; do
+    # Get metadata for this OSD
+    metadata=$(sudo ceph osd metadata $osd_id 2>/dev/null)
+    
+    # Extract only the information we want
+    size=$(echo "$metadata" | grep -o '"bluestore_bdev_size":"[^"]*"' | cut -d'"' -f4)
+    # Convert size from bytes to GB if not empty
+    if [[ ! -z "$size" && $BC_AVAILABLE -eq 1 ]]; then
+        size_gb=$(echo "scale=2; $size / 1024 / 1024 / 1024" | bc -l)
+        size="${size_gb}GB"
+    fi
+    
+    data_path=$(echo "$metadata" | grep -o '"osd_data":"[^"]*"' | cut -d'"' -f4)
+    device_path=$(echo "$metadata" | grep -o '"device_paths":"[^"]*"' | cut -d'"' -f4)
+    partition_path=$(echo "$metadata" | grep -o '"bluestore_bdev_partition_path":"[^"]*"' | cut -d'"' -f4)
+    db_path=$(echo "$metadata" | grep -o '"bluefs_db_partition_path":"[^"]*"' | cut -d'"' -f4)
+    wal_path=$(echo "$metadata" | grep -o '"bluefs_wal_partition_path":"[^"]*"' | cut -d'"' -f4)
+    
+    # Output to the table
+    echo "| $osd_id | $size | $data_path | $device_path | $partition_path | $db_path | $wal_path |" >> ceph-mapping.md
+done
+
+echo "" >> ceph-mapping.md
+
+# Get detailed disk information for local OSDs
 echo "### Detailed Disk Information" >> ceph-mapping.md
 echo "" >> ceph-mapping.md
 
 echo "| OSD ID | Device Path | Type | Size | Model | DB Device | DB Size | WAL Device | WAL Size |" >> ceph-mapping.md
 echo "|--------|-------------|------|------|-------|-----------|---------|------------|----------|" >> ceph-mapping.md
 
-# Get list of OSDs
-osds=$(sudo ceph osd ls 2>/dev/null)
-if [[ $? -ne 0 || -z "$osds" ]]; then
-    log_error "Failed to get list of OSDs. Continuing with other sections..."
-    echo "Error: Failed to retrieve OSD list. This section will be incomplete." >> ceph-mapping.md
-else
-    log_debug "Found $(echo $osds | wc -w) OSDs"
-fi
-
 # Track progress
-total_osds=$(echo $osds | wc -w)
+total_osds=$(echo $local_osds | wc -w)
 processed=0
 
-for osd_id in $osds; do
+for osd_id in $local_osds; do
     echo "Processing OSD $osd_id..."
     log_debug "Beginning processing for OSD $osd_id (Progress: $((++processed))/$total_osds)"
     
@@ -376,7 +406,7 @@ for osd_id in $osds; do
 
     # Get DB device info using multiple methods
     log_debug "Getting DB device info for OSD $osd_id"
-    db_path=$(sudo ceph osd metadata $osd_id 2>/dev/null | grep -o '"bluestore_db_path":"[^"]*"' | cut -d'"' -f4)
+    db_path=$(sudo ceph osd metadata $osd_id 2>/dev/null | grep -o '"bluefs_db_partition_path":"[^"]*"' | cut -d'"' -f4)
     if [[ ! -z "$db_path" && "$db_path" != "null" ]]; then
         log_debug "Found DB path: $db_path"
         # Try to get the device from the mount point
@@ -409,7 +439,7 @@ for osd_id in $osds; do
 
     # Get WAL device info (similar to DB device)
     log_debug "Getting WAL device info for OSD $osd_id"
-    wal_path=$(sudo ceph osd metadata $osd_id 2>/dev/null | grep -o '"bluestore_wal_path":"[^"]*"' | cut -d'"' -f4)
+    wal_path=$(sudo ceph osd metadata $osd_id 2>/dev/null | grep -o '"bluefs_wal_partition_path":"[^"]*"' | cut -d'"' -f4)
     if [[ ! -z "$wal_path" && "$wal_path" != "null" ]]; then
         log_debug "Found WAL path: $wal_path"
         wal_device=$(sudo findmnt -n -o SOURCE --target "$wal_path" 2>/dev/null)
@@ -477,14 +507,6 @@ sudo ceph pg stat >> ceph-mapping.md
 echo '```' >> ceph-mapping.md
 echo "" >> ceph-mapping.md
 
-# Add a note about how to read the mapping
-echo "## Notes" >> ceph-mapping.md
-echo "- **HDD/SSD**: Indicates the storage device type for each OSD" >> ceph-mapping.md
-echo "- **DB Device**: BlueStore's internal metadata database location" >> ceph-mapping.md
-echo "- **WAL Device**: BlueStore's write-ahead log location" >> ceph-mapping.md
-echo "- **'Colocated'**: Means the DB/WAL is on the same device as the OSD data" >> ceph-mapping.md
-echo "" >> ceph-mapping.md
-
 # Add additional section with lsblk information for all devices
 echo "## System Storage Overview" >> ceph-mapping.md
 echo "### All Block Devices" >> ceph-mapping.md
@@ -501,6 +523,14 @@ sudo vgs >> ceph-mapping.md
 echo "" >> ceph-mapping.md
 sudo lvs >> ceph-mapping.md
 echo '```' >> ceph-mapping.md
+echo "" >> ceph-mapping.md
+
+# Add a note about how to read the mapping
+echo "## Notes" >> ceph-mapping.md
+echo "- **HDD/SSD**: Indicates the storage device type for each OSD" >> ceph-mapping.md
+echo "- **DB Device**: BlueStore's internal metadata database location" >> ceph-mapping.md
+echo "- **WAL Device**: BlueStore's write-ahead log location" >> ceph-mapping.md
+echo "- **'Colocated'**: Means the DB/WAL is on the same device as the OSD data" >> ceph-mapping.md
 echo "" >> ceph-mapping.md
 
 echo "Ceph cluster information collected successfully!"
