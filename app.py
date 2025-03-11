@@ -141,6 +141,8 @@ def parse_output_file(file_path):
         'lvm_info': lvm_info
     }
 
+# Fix for parse_osd_by_server_and_type function in app.py
+
 def parse_osd_by_server_and_type(output_files):
     """
     Parse OSD information from markdown files and organize by server and device type
@@ -164,49 +166,75 @@ def parse_osd_by_server_and_type(output_files):
                 }
                 
             # Parse detailed disk information section
+            # Modified regex pattern - handles both the original format and slight variations
             disk_info_section = re.search(r'### Detailed Disk Information\s*\n\s*\n\|\s*OSD ID.*\n\|[-:|\s]*\n((?:\|.*\n)+)', content)
             
-            if disk_info_section:
+            if not disk_info_section:
+                # Try an alternative pattern that's more flexible
+                disk_info_section = re.search(r'### Detailed Disk Information\s*\n\s*\n\|(.*?)\n\|(.*?)\n((?:\|.*\n)+)', content)
+                if disk_info_section:
+                    table_rows = disk_info_section.group(3).strip().split('\n')
+                else:
+                    # If we still can't find it, check Local OSDs section to at least list the OSDs
+                    local_osds_match = re.search(r'### Local OSDs\s*This server hosts the following OSDs: (.*?)\n', content)
+                    if local_osds_match:
+                        osd_list = local_osds_match.group(1).replace(' ', '').split(',')
+                        for osd_id in osd_list:
+                            # Add these to unknown since we don't have detailed info
+                            if osd_id:  # Skip empty entries
+                                servers_data[server_name]['unknown_osds'].append({
+                                    'osd_id': osd_id,
+                                    'device_path': "Unknown",
+                                    'size': "Unknown",
+                                    'model': "Unknown",
+                                    'db_device': "Unknown",
+                                    'db_size': "N/A",
+                                    'wal_device': "Unknown",
+                                    'wal_size': "N/A"
+                                })
+                    continue  # Skip the rest of processing for this file
+            else:
                 table_rows = disk_info_section.group(1).strip().split('\n')
+            
+            for row in table_rows:
+                # Skip empty rows
+                if not row or row.count('|') < 5:
+                    continue
                 
-                for row in table_rows:
-                    # Skip empty rows
-                    if not row or row.count('|') < 5:
-                        continue
-                    
-                    # Split the row into columns
-                    columns = [col.strip() for col in row.split('|')]
-                    if len(columns) < 9:
-                        continue
-                    
-                    osd_id = columns[1]
-                    device_path = columns[2]
-                    device_type = columns[3].lower()
-                    size = columns[4]
-                    model = columns[5]
-                    db_device = columns[6]
-                    db_size = columns[7]
-                    wal_device = columns[8]
-                    wal_size = columns[9] if len(columns) > 9 else "N/A"
-                    
-                    osd_data = {
-                        'osd_id': osd_id,
-                        'device_path': device_path,
-                        'size': size,
-                        'model': model,
-                        'db_device': db_device,
-                        'db_size': db_size,
-                        'wal_device': wal_device,
-                        'wal_size': wal_size
-                    }
-                    
-                    # Add to appropriate category based on device type
-                    if 'hdd' in device_type:
-                        servers_data[server_name]['hdd_osds'].append(osd_data)
-                    elif 'ssd' in device_type:
-                        servers_data[server_name]['ssd_osds'].append(osd_data)
-                    else:
-                        servers_data[server_name]['unknown_osds'].append(osd_data)
+                # Split the row into columns
+                columns = [col.strip() for col in row.split('|')]
+                if len(columns) < 9:
+                    continue
+                
+                # Get indices for the columns we need (accounting for the empty first column)
+                osd_id = columns[1]
+                device_path = columns[2]
+                device_type = columns[3].lower() if len(columns) > 3 else "unknown"
+                size = columns[4] if len(columns) > 4 else "Unknown"
+                model = columns[5] if len(columns) > 5 else "Unknown"
+                db_device = columns[6] if len(columns) > 6 else "Unknown"
+                db_size = columns[7] if len(columns) > 7 else "N/A"
+                wal_device = columns[8] if len(columns) > 8 else "Unknown"
+                wal_size = columns[9] if len(columns) > 9 else "N/A"
+                
+                osd_data = {
+                    'osd_id': osd_id,
+                    'device_path': device_path,
+                    'size': size,
+                    'model': model,
+                    'db_device': db_device,
+                    'db_size': db_size,
+                    'wal_device': wal_device,
+                    'wal_size': wal_size
+                }
+                
+                # Add to appropriate category based on device type
+                if 'hdd' in device_type:
+                    servers_data[server_name]['hdd_osds'].append(osd_data)
+                elif 'ssd' in device_type:
+                    servers_data[server_name]['ssd_osds'].append(osd_data)
+                else:
+                    servers_data[server_name]['unknown_osds'].append(osd_data)
                         
         except Exception as e:
             print(f"Error parsing {file_path}: {str(e)}")
