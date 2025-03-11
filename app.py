@@ -141,13 +141,45 @@ def parse_output_file(file_path):
         'lvm_info': lvm_info
     }
 
-# Fix for parse_osd_by_server_and_type function in app.py
+def extract_osd_types_from_tree(output_files):
+    """
+    Extract OSD types (HDD/SSD) from the OSD Tree section
+    Returns a dictionary mapping OSD IDs to their types
+    """
+    osd_types = {}
+    
+    for file_path in output_files:
+        try:
+            with open(file_path, 'r') as f:
+                content = f.read()
+            
+            # Find the OSD Tree section
+            osd_tree_match = re.search(r'### OSD Tree\s*```\s*(.*?)\s*```', content, re.DOTALL)
+            
+            if osd_tree_match:
+                tree_text = osd_tree_match.group(1)
+                # Parse the tree to extract OSD IDs and their classes
+                for line in tree_text.splitlines():
+                    # Look for lines with osd.X that include class information
+                    osd_match = re.search(r'(\d+)\s+(hdd|ssd)\s+', line)
+                    if osd_match:
+                        osd_id = osd_match.group(1)
+                        osd_class = osd_match.group(2)
+                        osd_types[osd_id] = osd_class
+        except Exception as e:
+            print(f"Error extracting OSD types from {file_path}: {str(e)}")
+    
+    return osd_types
 
 def parse_osd_by_server_and_type(output_files):
     """
     Parse OSD information from markdown files and organize by server and device type
+    Uses the CRUSH map data to correctly identify OSD types
     """
     servers_data = {}
+    
+    # First, extract OSD types from the OSD Tree (CRUSH map)
+    osd_types = extract_osd_types_from_tree(output_files)
     
     for file_path in output_files:
         try:
@@ -164,81 +196,102 @@ def parse_osd_by_server_and_type(output_files):
                     'ssd_osds': [],
                     'unknown_osds': []
                 }
-                
-            # Parse detailed disk information section
-            # Modified regex pattern - handles both the original format and slight variations
-            disk_info_section = re.search(r'### Detailed Disk Information\s*\n\s*\n\|\s*OSD ID.*\n\|[-:|\s]*\n((?:\|.*\n)+)', content)
             
-            if not disk_info_section:
-                # Try an alternative pattern that's more flexible
-                disk_info_section = re.search(r'### Detailed Disk Information\s*\n\s*\n\|(.*?)\n\|(.*?)\n((?:\|.*\n)+)', content)
-                if disk_info_section:
-                    table_rows = disk_info_section.group(3).strip().split('\n')
-                else:
-                    # If we still can't find it, check Local OSDs section to at least list the OSDs
-                    local_osds_match = re.search(r'### Local OSDs\s*This server hosts the following OSDs: (.*?)\n', content)
-                    if local_osds_match:
-                        osd_list = local_osds_match.group(1).replace(' ', '').split(',')
-                        for osd_id in osd_list:
-                            # Add these to unknown since we don't have detailed info
-                            if osd_id:  # Skip empty entries
-                                servers_data[server_name]['unknown_osds'].append({
-                                    'osd_id': osd_id,
-                                    'device_path': "Unknown",
-                                    'size': "Unknown",
-                                    'model': "Unknown",
-                                    'db_device': "Unknown",
-                                    'db_size': "N/A",
-                                    'wal_device': "Unknown",
-                                    'wal_size': "N/A"
-                                })
-                    continue  # Skip the rest of processing for this file
-            else:
-                table_rows = disk_info_section.group(1).strip().split('\n')
+            # Get list of local OSDs for this server
+            local_osds = []
+            local_osds_match = re.search(r'### Local OSDs\s*This server hosts the following OSDs:\s*(.*?)\n', content)
+            if local_osds_match:
+                local_osds_str = local_osds_match.group(1).replace(' ', '')
+                local_osds = [osd.strip() for osd in local_osds_str.split(',') if osd.strip()]
             
-            for row in table_rows:
-                # Skip empty rows
-                if not row or row.count('|') < 5:
-                    continue
-                
-                # Split the row into columns
-                columns = [col.strip() for col in row.split('|')]
-                if len(columns) < 9:
-                    continue
-                
-                # Get indices for the columns we need (accounting for the empty first column)
-                osd_id = columns[1]
-                device_path = columns[2]
-                device_type = columns[3].lower() if len(columns) > 3 else "unknown"
-                size = columns[4] if len(columns) > 4 else "Unknown"
-                model = columns[5] if len(columns) > 5 else "Unknown"
-                db_device = columns[6] if len(columns) > 6 else "Unknown"
-                db_size = columns[7] if len(columns) > 7 else "N/A"
-                wal_device = columns[8] if len(columns) > 8 else "Unknown"
-                wal_size = columns[9] if len(columns) > 9 else "N/A"
-                
+            # Process data for each local OSD
+            for osd_id in local_osds:
+                # Initialize with default values
                 osd_data = {
                     'osd_id': osd_id,
-                    'device_path': device_path,
-                    'size': size,
-                    'model': model,
-                    'db_device': db_device,
-                    'db_size': db_size,
-                    'wal_device': wal_device,
-                    'wal_size': wal_size
+                    'device_path': "Unknown",
+                    'size': "Unknown",
+                    'model': "Unknown",
+                    'db_device': "Unknown",
+                    'db_size': "N/A",
+                    'wal_device': "Unknown",
+                    'wal_size': "N/A"
                 }
                 
-                # Add to appropriate category based on device type
-                if 'hdd' in device_type:
+                # Try to get detailed disk information
+                disk_info_section = re.search(r'### Detailed Disk Information\s*\n\s*\n\|(.*?)\n\|(.*?)\n((?:\|.*\n)+)', content, re.DOTALL)
+                if disk_info_section:
+                    headers = [h.strip() for h in disk_info_section.group(1).split('|') if h.strip()]
+                    rows = disk_info_section.group(3).strip().split('\n')
+                    
+                    for row in rows:
+                        columns = [col.strip() for col in row.split('|') if col.strip()]
+                        if len(columns) >= len(headers):
+                            try:
+                                # Extract OSD ID from the row (should be the first column)
+                                row_osd_id = columns[0]
+                                # Clean up OSD ID if needed
+                                if row_osd_id.isdigit() and row_osd_id == osd_id:
+                                    # Map column indices to headers
+                                    col_map = {headers[i]: columns[i] for i in range(len(headers)) if i < len(columns)}
+                                    
+                                    # Extract values based on header names
+                                    osd_data['device_path'] = col_map.get('Device Path', 'Unknown')
+                                    osd_data['size'] = col_map.get('Size', 'Unknown')
+                                    osd_data['model'] = col_map.get('Model', 'Unknown')
+                                    osd_data['db_device'] = col_map.get('DB Device', 'Unknown')
+                                    osd_data['db_size'] = col_map.get('DB Size', 'N/A')
+                                    osd_data['wal_device'] = col_map.get('WAL Device', 'Unknown')
+                                    osd_data['wal_size'] = col_map.get('WAL Size', 'N/A')
+                                    break
+                            except Exception as e:
+                                print(f"Error processing row for OSD {osd_id}: {str(e)}")
+                                continue
+                
+                # Fall back to metadata section if detailed info not found
+                if osd_data['device_path'] == "Unknown":
+                    meta_section = re.search(r'### OSD Metadata.*?\n.*?\n\|(.*?)\n\|(.*?)\n((?:\|.*\n)+)', content, re.DOTALL)
+                    if meta_section:
+                        headers = [h.strip() for h in meta_section.group(1).split('|') if h.strip()]
+                        rows = meta_section.group(3).strip().split('\n')
+                        
+                        for row in rows:
+                            columns = [col.strip() for col in row.split('|') if col.strip()]
+                            if len(columns) >= len(headers):
+                                row_osd_id = columns[0]
+                                if row_osd_id == osd_id:
+                                    # Map column indices to headers
+                                    col_map = {headers[i]: columns[i] for i in range(len(headers)) if i < len(columns)}
+                                    
+                                    # Update OSD data from metadata
+                                    osd_data['size'] = col_map.get('Size', 'Unknown')
+                                    osd_data['device_path'] = col_map.get('Device Path', 'Unknown')
+                                    if 'DB Path' in col_map:
+                                        db_path = col_map.get('DB Path')
+                                        if db_path != "N/A":
+                                            osd_data['db_device'] = db_path
+                                    if 'WAL Path' in col_map:
+                                        wal_path = col_map.get('WAL Path')
+                                        if wal_path != "N/A":
+                                            osd_data['wal_device'] = wal_path
+                                    break
+                
+                # Use OSD type from CRUSH map
+                osd_type = osd_types.get(osd_id, 'unknown')
+                
+                # Add OSD to the appropriate category based on the CRUSH map
+                if osd_type == 'hdd':
                     servers_data[server_name]['hdd_osds'].append(osd_data)
-                elif 'ssd' in device_type:
+                elif osd_type == 'ssd':
                     servers_data[server_name]['ssd_osds'].append(osd_data)
                 else:
                     servers_data[server_name]['unknown_osds'].append(osd_data)
-                        
-        except Exception as e:
-            print(f"Error parsing {file_path}: {str(e)}")
             
+        except Exception as e:
+            print(f"Error parsing file {file_path}: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    
     return servers_data
 
 @app.route('/')
